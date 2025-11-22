@@ -388,7 +388,7 @@ def create_download_link(fig, filename):
 
 # Main App
 def main():
-    st.title("📊 Project KPI Tracking System")
+    st.title("📊 OCTA KPI Tracking System")
     
     # Sidebar - Data Storage Info
     st.sidebar.title("💾 Data Storage")
@@ -727,4 +727,5 @@ def main():
                         st.rerun()
 
 if __name__ == "__main__":
+
     main()
