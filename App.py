@@ -43,58 +43,6 @@ PROJECT_PASSWORDS = {
     "Project Gamma": "gamma789"
 }
 
-# Color schemes for charts
-COLOR_SCHEMES = {
-    "Blue Tones": {
-        'primary': '#1f77b4',
-        'secondary': '#aec7e8',
-        'success': '#2ca02c',
-        'warning': '#ff7f0e',
-        'danger': '#d62728',
-        'background': '#f8f9fa'
-    },
-    "Ocean": {
-        'primary': '#006994',
-        'secondary': '#4FC3F7',
-        'success': '#00897B',
-        'warning': '#FFA726',
-        'danger': '#E53935',
-        'background': '#E0F7FA'
-    },
-    "Sunset": {
-        'primary': '#FF6B6B',
-        'secondary': '#FFB347',
-        'success': '#4ECDC4',
-        'warning': '#FFD93D',
-        'danger': '#C0392B',
-        'background': '#FFF5E6'
-    },
-    "Forest": {
-        'primary': '#2E7D32',
-        'secondary': '#66BB6A',
-        'success': '#1B5E20',
-        'warning': '#F57C00',
-        'danger': '#C62828',
-        'background': '#E8F5E9'
-    },
-    "Purple Dream": {
-        'primary': '#7B1FA2',
-        'secondary': '#BA68C8',
-        'success': '#00897B',
-        'warning': '#FFA726',
-        'danger': '#E53935',
-        'background': '#F3E5F5'
-    },
-    "Monochrome": {
-        'primary': '#424242',
-        'secondary': '#9E9E9E',
-        'success': '#616161',
-        'warning': '#757575',
-        'danger': '#212121',
-        'background': '#FAFAFA'
-    }
-}
-
 # Helper function to get CSV file path for a project
 def get_project_csv_path(project_name):
     """Get the CSV file path for a specific project"""
@@ -239,7 +187,7 @@ def login_project(project_name, password):
     return False
 
 # Visualization Functions
-def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
+def create_kpi_overview_chart(df, chart_type, color_scheme, project_name):
     """Create overview chart for all KPIs in a project"""
     project_data = df[df['Project'] == project_name].copy()
     
@@ -262,63 +210,43 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
         ), axis=1
     )
     
-    # Get color scheme
-    colors = COLOR_SCHEMES[color_scheme_name]
-    
     if chart_type == "Bar Chart":
         fig = px.bar(project_data, x='KPI', y='Progress %', 
                     color='Status',
                     color_discrete_map={
                         'Achieved': '#00CC66',
-                        'On Track': colors['primary'],
-                        'At Risk': colors['warning'],
-                        'Delayed': colors['danger'],
+                        'On Track': '#3366FF',
+                        'At Risk': '#FF9933',
+                        'Delayed': '#FF3333',
                         'Not Started': '#CCCCCC'
                     },
                     title=f'KPI Progress Overview - {project_name}',
                     labels={'Progress %': 'Progress (%)'},
                     text='Progress %')
-        fig.add_hline(y=100, line_dash="dash", line_color=colors['success'], 
+        fig.add_hline(y=100, line_dash="dash", line_color="green", 
                      annotation_text="Target")
         
-    elif chart_type == "Histogram":
-        fig = px.histogram(project_data, x='KPI', y='Progress %',
-                          color='Status',
-                          color_discrete_map={
-                              'Achieved': '#00CC66',
-                              'On Track': colors['primary'],
-                              'At Risk': colors['warning'],
-                              'Delayed': colors['danger'],
-                              'Not Started': '#CCCCCC'
-                          },
-                          title=f'KPI Progress Overview - {project_name}',
-                          labels={'Progress %': 'Progress (%)'})
-        fig.add_hline(y=100, line_dash="dash", line_color=colors['success'])
+    elif chart_type == "Line Chart":
+        fig = px.line(project_data, x='KPI', y='Progress %',
+                     title=f'KPI Progress Overview - {project_name}',
+                     markers=True)
+        fig.add_hline(y=100, line_dash="dash", line_color="green")
         
     elif chart_type == "Scatter Plot":
         fig = px.scatter(project_data, x='KPI', y='Progress %',
                         size='Current Value', color='Status',
-                        color_discrete_map={
-                            'Achieved': '#00CC66',
-                            'On Track': colors['primary'],
-                            'At Risk': colors['warning'],
-                            'Delayed': colors['danger'],
-                            'Not Started': '#CCCCCC'
-                        },
                         title=f'KPI Progress Overview - {project_name}')
-        fig.add_hline(y=100, line_dash="dash", line_color=colors['success'])
+        fig.add_hline(y=100, line_dash="dash", line_color="green")
     
     fig.update_layout(
-        plot_bgcolor=colors['background'],
-        paper_bgcolor='white',
+        template=color_scheme,
         height=500,
-        xaxis_tickangle=-45,
-        font=dict(color='#2c3e50')
+        xaxis_tickangle=-45
     )
     
     return fig
 
-def create_status_pie_chart(df, project_name, color_scheme_name):
+def create_status_pie_chart(df, project_name, color_scheme):
     """Create pie chart showing KPI status distribution"""
     project_data = df[df['Project'] == project_name].copy()
     
@@ -339,27 +267,22 @@ def create_status_pie_chart(df, project_name, color_scheme_name):
     )
     
     status_counts = project_data['Status'].value_counts()
-    colors = COLOR_SCHEMES[color_scheme_name]
     
     fig = px.pie(values=status_counts.values, names=status_counts.index,
                 title=f'KPI Status Distribution - {project_name}',
                 color=status_counts.index,
                 color_discrete_map={
                     'Achieved': '#00CC66',
-                    'On Track': colors['primary'],
-                    'At Risk': colors['warning'],
-                    'Delayed': colors['danger'],
+                    'On Track': '#3366FF',
+                    'At Risk': '#FF9933',
+                    'Delayed': '#FF3333',
                     'Not Started': '#CCCCCC'
                 })
     
-    fig.update_layout(
-        paper_bgcolor='white',
-        height=400,
-        font=dict(color='#2c3e50')
-    )
+    fig.update_layout(template=color_scheme, height=400)
     return fig
 
-def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
+def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme):
     """Create detailed charts for a specific KPI"""
     kpi_data = df[(df['Project'] == project_name) & (df['KPI'] == kpi_name)].copy()
     
@@ -368,7 +291,6 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     
     # Sort by timestamp to show progression
     kpi_data = kpi_data.sort_values('Timestamp')
-    colors = COLOR_SCHEMES[color_scheme_name]
     
     # Chart 1: Current vs Target
     latest_data = kpi_data.iloc[-1]
@@ -377,21 +299,19 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         name='Current Value',
         x=[kpi_name],
         y=[latest_data['Current Value']],
-        marker_color=colors['primary']
+        marker_color='lightblue'
     ))
     fig1.add_trace(go.Bar(
         name='Target',
         x=[kpi_name],
         y=[latest_data['Target']],
-        marker_color=colors['success']
+        marker_color='lightgreen'
     ))
     fig1.update_layout(
         title='Current Value vs Target',
+        template=color_scheme,
         barmode='group',
-        height=300,
-        plot_bgcolor=colors['background'],
-        paper_bgcolor='white',
-        font=dict(color='#2c3e50')
+        height=300
     )
     
     # Chart 2: Progress over time
@@ -401,15 +321,9 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         fig2 = px.line(kpi_data, x='Achievement Date', y='Current Value',
                       title='Progress Over Time',
                       markers=True)
-        fig2.update_traces(line_color=colors['primary'], marker_color=colors['secondary'])
         fig2.add_hline(y=latest_data['Target'], line_dash="dash", 
-                      line_color=colors['success'], annotation_text="Target")
-        fig2.update_layout(
-            height=300,
-            plot_bgcolor=colors['background'],
-            paper_bgcolor='white',
-            font=dict(color='#2c3e50')
-        )
+                      line_color="green", annotation_text="Target")
+        fig2.update_layout(template=color_scheme, height=300)
     else:
         fig2 = None
     
@@ -420,12 +334,8 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     if pd.notna(male) and pd.notna(female) and (male > 0 or female > 0):
         fig3 = px.pie(values=[male, female], names=['Male', 'Female'],
                      title='Gender Distribution',
-                     color_discrete_sequence=[colors['primary'], colors['warning']])
-        fig3.update_layout(
-            height=300,
-            paper_bgcolor='white',
-            font=dict(color='#2c3e50')
-        )
+                     color_discrete_sequence=['#3366FF', '#FF66CC'])
+        fig3.update_layout(template=color_scheme, height=300)
     else:
         fig3 = None
     
@@ -447,24 +357,20 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         delta={'reference': 100},
         gauge={
             'axis': {'range': [None, 100]},
-            'bar': {'color': colors['primary']},
+            'bar': {'color': "darkblue"},
             'steps': [
-                {'range': [0, 70], 'color': '#f0f0f0'},
-                {'range': [70, 90], 'color': colors['warning'], 'opacity': 0.3},
-                {'range': [90, 100], 'color': colors['success'], 'opacity': 0.3}
+                {'range': [0, 70], 'color': "lightgray"},
+                {'range': [70, 90], 'color': "lightyellow"},
+                {'range': [90, 100], 'color': "lightgreen"}
             ],
             'threshold': {
-                'line': {'color': colors['danger'], 'width': 4},
+                'line': {'color': "red", 'width': 4},
                 'thickness': 0.75,
                 'value': 100
             }
         }
     ))
-    fig4.update_layout(
-        height=300,
-        paper_bgcolor='white',
-        font=dict(color='#2c3e50')
-    )
+    fig4.update_layout(template=color_scheme, height=300)
     
     return fig1, fig2, fig3, fig4
 
@@ -690,8 +596,8 @@ def main():
             # Color scheme selection
             col1, col2 = st.columns([3, 1])
             with col2:
-                color_scheme = st.selectbox("Color Scheme", 
-                    list(COLOR_SCHEMES.keys()),
+                color_scheme = st.selectbox("Color Theme", 
+                    ["plotly", "plotly_white", "plotly_dark", "ggplot2", "seaborn", "simple_white"],
                     key="detail_color")
             
             # Create detailed charts
@@ -748,11 +654,11 @@ def main():
             
             with col1:
                 chart_type = st.selectbox("Chart Type", 
-                    ["Bar Chart", "Histogram", "Scatter Plot"])
+                    ["Bar Chart", "Line Chart", "Scatter Plot"])
             
             with col2:
-                color_scheme = st.selectbox("Color Scheme", 
-                    list(COLOR_SCHEMES.keys()))
+                color_scheme = st.selectbox("Color Theme", 
+                    ["plotly", "plotly_white", "plotly_dark", "ggplot2", "seaborn", "simple_white"])
             
             # Main overview chart
             overview_fig = create_kpi_overview_chart(df, chart_type, color_scheme, project)
@@ -821,4 +727,5 @@ def main():
                         st.rerun()
 
 if __name__ == "__main__":
+
     main()
