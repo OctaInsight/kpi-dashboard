@@ -539,22 +539,19 @@ def main():
     if DATA_DIR.exists():
         st.sidebar.success("✅ Directory exists")
         
-        # List all files in directory
+        # Count files but don't show names (privacy)
         csv_files = list(DATA_DIR.glob("*_KPI_data.csv"))
         if csv_files:
             st.sidebar.success(f"📁 {len(csv_files)} CSV file(s) found")
-            with st.sidebar.expander("View Files"):
-                for f in csv_files:
-                    st.write(f"• {f.name}")
         else:
             st.sidebar.warning("⚠️ No CSV files found")
     else:
         st.sidebar.error("❌ Directory does not exist")
     
-    # Show available projects
+    # Show available projects count only
     available_projects = get_available_projects()
     if available_projects:
-        st.sidebar.info(f"📊 Projects: {', '.join(available_projects)}")
+        st.sidebar.info(f"📊 {len(available_projects)} project(s) with data")
     
     # Sidebar navigation
     st.sidebar.title("Navigation")
