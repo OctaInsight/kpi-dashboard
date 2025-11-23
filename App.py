@@ -4,7 +4,6 @@ Spyder Editor
 
 This is a temporary script file.
 """
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -58,55 +57,79 @@ PROJECT_PASSWORDS = {
     "Project Gamma": "gamma789"
 }
 
-# Color schemes for charts
+# Color schemes for charts - with separate background and bar colors
 COLOR_SCHEMES = {
     "Blue Tones": {
-        'primary': '#1f77b4',
-        'secondary': '#aec7e8',
+        'bar_colors': ['#1f77b4', '#aec7e8', '#3498db', '#5dade2', '#85c1e9'],
+        'background': '#f8f9fa',
+        'text_color': '#2c3e50',
+        'grid_color': '#e0e0e0',
         'success': '#2ca02c',
         'warning': '#ff7f0e',
-        'danger': '#d62728',
-        'background': '#f8f9fa'
+        'danger': '#d62728'
     },
     "Ocean": {
-        'primary': '#006994',
-        'secondary': '#4FC3F7',
+        'bar_colors': ['#006994', '#4FC3F7', '#0288D1', '#03A9F4', '#4DD0E1'],
+        'background': '#E0F7FA',
+        'text_color': '#004D40',
+        'grid_color': '#B2EBF2',
         'success': '#00897B',
         'warning': '#FFA726',
-        'danger': '#E53935',
-        'background': '#E0F7FA'
+        'danger': '#E53935'
     },
     "Sunset": {
-        'primary': '#FF6B6B',
-        'secondary': '#FFB347',
+        'bar_colors': ['#FF6B6B', '#FFB347', '#FF8C42', '#FFA07A', '#FF7F50'],
+        'background': '#FFF5E6',
+        'text_color': '#8B4513',
+        'grid_color': '#FFE4B5',
         'success': '#4ECDC4',
         'warning': '#FFD93D',
-        'danger': '#C0392B',
-        'background': '#FFF5E6'
+        'danger': '#C0392B'
     },
     "Forest": {
-        'primary': '#2E7D32',
-        'secondary': '#66BB6A',
+        'bar_colors': ['#2E7D32', '#66BB6A', '#43A047', '#66BB6A', '#81C784'],
+        'background': '#E8F5E9',
+        'text_color': '#1B5E20',
+        'grid_color': '#C8E6C9',
         'success': '#1B5E20',
         'warning': '#F57C00',
-        'danger': '#C62828',
-        'background': '#E8F5E9'
+        'danger': '#C62828'
     },
     "Purple Dream": {
-        'primary': '#7B1FA2',
-        'secondary': '#BA68C8',
+        'bar_colors': ['#7B1FA2', '#BA68C8', '#9C27B0', '#AB47BC', '#CE93D8'],
+        'background': '#F3E5F5',
+        'text_color': '#4A148C',
+        'grid_color': '#E1BEE7',
         'success': '#00897B',
         'warning': '#FFA726',
-        'danger': '#E53935',
-        'background': '#F3E5F5'
+        'danger': '#E53935'
     },
     "Monochrome": {
-        'primary': '#424242',
-        'secondary': '#9E9E9E',
+        'bar_colors': ['#424242', '#9E9E9E', '#616161', '#757575', '#BDBDBD'],
+        'background': '#FAFAFA',
+        'text_color': '#212121',
+        'grid_color': '#E0E0E0',
         'success': '#616161',
         'warning': '#757575',
-        'danger': '#212121',
-        'background': '#FAFAFA'
+        'danger': '#212121'
+    },
+    "Dark Mode": {
+        'bar_colors': ['#64B5F6', '#81C784', '#FFB74D', '#E57373', '#BA68C8'],
+        'background': '#1e1e1e',
+        'text_color': '#ffffff',
+        'grid_color': '#404040',
+        'success': '#4CAF50',
+        'warning': '#FF9800',
+        'danger': '#F44336'
+    },
+    "Warm Autumn": {
+        'bar_colors': ['#D84315', '#F4511E', '#FF6F00', '#FB8C00', '#FFA726'],
+        'background': '#FFF3E0',
+        'text_color': '#BF360C',
+        'grid_color': '#FFE0B2',
+        'success': '#7CB342',
+        'warning': '#FFA000',
+        'danger': '#D32F2F'
     }
 }
 
@@ -312,16 +335,19 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
     # Get color scheme
     colors = COLOR_SCHEMES[color_scheme_name]
     
+    # Status colors (foreground)
+    status_colors = {
+        'Achieved': '#00CC66',
+        'On Track': colors['bar_colors'][0],
+        'At Risk': colors['warning'],
+        'Delayed': colors['danger'],
+        'Not Started': '#CCCCCC'
+    }
+    
     if chart_type == "Bar Chart":
         fig = px.bar(project_data, x='KPI', y='Progress %', 
                     color='Status',
-                    color_discrete_map={
-                        'Achieved': '#00CC66',
-                        'On Track': colors['primary'],
-                        'At Risk': colors['warning'],
-                        'Delayed': colors['danger'],
-                        'Not Started': '#CCCCCC'
-                    },
+                    color_discrete_map=status_colors,
                     title=f'KPI Progress Overview - {project_name}',
                     labels={'Progress %': 'Progress (%)'},
                     text='Progress %')
@@ -331,13 +357,7 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
     elif chart_type == "Histogram":
         fig = px.histogram(project_data, x='KPI', y='Progress %',
                           color='Status',
-                          color_discrete_map={
-                              'Achieved': '#00CC66',
-                              'On Track': colors['primary'],
-                              'At Risk': colors['warning'],
-                              'Delayed': colors['danger'],
-                              'Not Started': '#CCCCCC'
-                          },
+                          color_discrete_map=status_colors,
                           title=f'KPI Progress Overview - {project_name}',
                           labels={'Progress %': 'Progress (%)'})
         fig.add_hline(y=100, line_dash="dash", line_color=colors['success'])
@@ -345,22 +365,26 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
     elif chart_type == "Scatter Plot":
         fig = px.scatter(project_data, x='KPI', y='Progress %',
                         size='Current Value', color='Status',
-                        color_discrete_map={
-                            'Achieved': '#00CC66',
-                            'On Track': colors['primary'],
-                            'At Risk': colors['warning'],
-                            'Delayed': colors['danger'],
-                            'Not Started': '#CCCCCC'
-                        },
+                        color_discrete_map=status_colors,
                         title=f'KPI Progress Overview - {project_name}')
         fig.add_hline(y=100, line_dash="dash", line_color=colors['success'])
     
+    # Apply background and text colors
     fig.update_layout(
         plot_bgcolor=colors['background'],
-        paper_bgcolor='white',
+        paper_bgcolor=colors['background'],
         height=500,
         xaxis_tickangle=-45,
-        font=dict(color='#2c3e50')
+        font=dict(color=colors['text_color'], size=12),
+        title_font=dict(color=colors['text_color'], size=18),
+        xaxis=dict(
+            gridcolor=colors['grid_color'],
+            color=colors['text_color']
+        ),
+        yaxis=dict(
+            gridcolor=colors['grid_color'],
+            color=colors['text_color']
+        )
     )
     
     return fig
@@ -388,21 +412,24 @@ def create_status_pie_chart(df, project_name, color_scheme_name):
     status_counts = project_data['Status'].value_counts()
     colors = COLOR_SCHEMES[color_scheme_name]
     
+    status_colors = {
+        'Achieved': '#00CC66',
+        'On Track': colors['bar_colors'][0],
+        'At Risk': colors['warning'],
+        'Delayed': colors['danger'],
+        'Not Started': '#CCCCCC'
+    }
+    
     fig = px.pie(values=status_counts.values, names=status_counts.index,
                 title=f'KPI Status Distribution - {project_name}',
                 color=status_counts.index,
-                color_discrete_map={
-                    'Achieved': '#00CC66',
-                    'On Track': colors['primary'],
-                    'At Risk': colors['warning'],
-                    'Delayed': colors['danger'],
-                    'Not Started': '#CCCCCC'
-                })
+                color_discrete_map=status_colors)
     
     fig.update_layout(
-        paper_bgcolor='white',
+        paper_bgcolor=colors['background'],
         height=400,
-        font=dict(color='#2c3e50')
+        font=dict(color=colors['text_color'], size=12),
+        title_font=dict(color=colors['text_color'], size=16)
     )
     return fig
 
@@ -417,14 +444,16 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     kpi_data = kpi_data.sort_values('Timestamp')
     colors = COLOR_SCHEMES[color_scheme_name]
     
+    # Get the latest data as a dictionary for easier access
+    latest_data = kpi_data.iloc[-1].to_dict()
+    
     # Chart 1: Current vs Target
-    latest_data = kpi_data.iloc[-1]
     fig1 = go.Figure()
     fig1.add_trace(go.Bar(
         name='Current Value',
         x=[kpi_name],
         y=[latest_data['Current Value']],
-        marker_color=colors['primary']
+        marker_color=colors['bar_colors'][0]
     ))
     fig1.add_trace(go.Bar(
         name='Target',
@@ -437,8 +466,11 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         barmode='group',
         height=300,
         plot_bgcolor=colors['background'],
-        paper_bgcolor='white',
-        font=dict(color='#2c3e50')
+        paper_bgcolor=colors['background'],
+        font=dict(color=colors['text_color'], size=12),
+        title_font=dict(color=colors['text_color'], size=14),
+        xaxis=dict(gridcolor=colors['grid_color'], color=colors['text_color']),
+        yaxis=dict(gridcolor=colors['grid_color'], color=colors['text_color'])
     )
     
     # Chart 2: Progress over time
@@ -448,14 +480,17 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         fig2 = px.line(kpi_data, x='Achievement Date', y='Current Value',
                       title='Progress Over Time',
                       markers=True)
-        fig2.update_traces(line_color=colors['primary'], marker_color=colors['secondary'])
+        fig2.update_traces(line_color=colors['bar_colors'][0], marker_color=colors['bar_colors'][1])
         fig2.add_hline(y=latest_data['Target'], line_dash="dash", 
                       line_color=colors['success'], annotation_text="Target")
         fig2.update_layout(
             height=300,
             plot_bgcolor=colors['background'],
-            paper_bgcolor='white',
-            font=dict(color='#2c3e50')
+            paper_bgcolor=colors['background'],
+            font=dict(color=colors['text_color'], size=12),
+            title_font=dict(color=colors['text_color'], size=14),
+            xaxis=dict(gridcolor=colors['grid_color'], color=colors['text_color']),
+            yaxis=dict(gridcolor=colors['grid_color'], color=colors['text_color'])
         )
     else:
         fig2 = None
@@ -464,54 +499,86 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     male = latest_data.get('Male Count', 0)
     female = latest_data.get('Female Count', 0)
     
-    if pd.notna(male) and pd.notna(female) and (male > 0 or female > 0):
+    # Convert to numeric, handling empty strings and NaN
+    try:
+        male = float(male) if male != '' and pd.notna(male) else 0
+        female = float(female) if female != '' and pd.notna(female) else 0
+    except (ValueError, TypeError):
+        male = 0
+        female = 0
+    
+    if (male > 0 or female > 0):
         fig3 = px.pie(values=[male, female], names=['Male', 'Female'],
                      title='Gender Distribution',
-                     color_discrete_sequence=[colors['primary'], colors['warning']])
+                     color_discrete_sequence=[colors['bar_colors'][0], colors['bar_colors'][2]])
         fig3.update_layout(
             height=300,
-            paper_bgcolor='white',
-            font=dict(color='#2c3e50')
+            paper_bgcolor=colors['background'],
+            font=dict(color=colors['text_color'], size=12),
+            title_font=dict(color=colors['text_color'], size=14)
         )
     else:
         fig3 = None
     
-    # Chart 4: Status indicator
-    status = calculate_kpi_status(
-        latest_data['Current Value'],
-        latest_data['Target'],
-        pd.to_datetime(latest_data['Start Date']).date(),
-        pd.to_datetime(latest_data['End Date']).date()
-    )
-    
-    progress = (latest_data['Current Value'] / latest_data['Target'] * 100)
-    
-    fig4 = go.Figure(go.Indicator(
-        mode="gauge+number+delta",
-        value=progress,
-        domain={'x': [0, 1], 'y': [0, 1]},
-        title={'text': f"Progress: {status}"},
-        delta={'reference': 100},
-        gauge={
-            'axis': {'range': [None, 100]},
-            'bar': {'color': colors['primary']},
-            'steps': [
-                {'range': [0, 70], 'color': '#f0f0f0'},
-                {'range': [70, 90], 'color': colors['warning'], 'opacity': 0.3},
-                {'range': [90, 100], 'color': colors['success'], 'opacity': 0.3}
-            ],
-            'threshold': {
-                'line': {'color': colors['danger'], 'width': 4},
-                'thickness': 0.75,
-                'value': 100
+    # Chart 4: Status indicator (Gauge)
+    try:
+        # Safely parse dates
+        start_date_str = latest_data.get('Start Date', '')
+        end_date_str = latest_data.get('End Date', '')
+        
+        if start_date_str and pd.notna(start_date_str):
+            start_date = pd.to_datetime(start_date_str).date()
+        else:
+            start_date = date.today()
+            
+        if end_date_str and pd.notna(end_date_str):
+            end_date = pd.to_datetime(end_date_str).date()
+        else:
+            end_date = date.today()
+        
+        # Calculate status
+        status = calculate_kpi_status(
+            float(latest_data['Current Value']),
+            float(latest_data['Target']),
+            start_date,
+            end_date
+        )
+        
+        # Calculate progress percentage
+        target_val = float(latest_data['Target'])
+        current_val = float(latest_data['Current Value'])
+        progress = (current_val / target_val * 100) if target_val > 0 else 0
+        
+        fig4 = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=progress,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': f"Progress: {status}", 'font': {'color': colors['text_color']}},
+            delta={'reference': 100},
+            number={'font': {'color': colors['text_color'], 'size': 30}},
+            gauge={
+                'axis': {'range': [None, 100], 'tickcolor': colors['text_color'], 'tickfont': {'color': colors['text_color']}},
+                'bar': {'color': colors['bar_colors'][0]},
+                'steps': [
+                    {'range': [0, 70], 'color': colors['grid_color']},
+                    {'range': [70, 90], 'color': colors['warning'], 'line': {'width': 0}},
+                    {'range': [90, 100], 'color': colors['success'], 'line': {'width': 0}}
+                ],
+                'threshold': {
+                    'line': {'color': colors['danger'], 'width': 4},
+                    'thickness': 0.75,
+                    'value': 100
+                }
             }
-        }
-    ))
-    fig4.update_layout(
-        height=300,
-        paper_bgcolor='white',
-        font=dict(color='#2c3e50')
-    )
+        ))
+        fig4.update_layout(
+            height=300,
+            paper_bgcolor=colors['background'],
+            font=dict(color=colors['text_color'], size=12)
+        )
+    except Exception as e:
+        st.warning(f"Could not create gauge chart: {e}")
+        fig4 = None
     
     return fig1, fig2, fig3, fig4
 
