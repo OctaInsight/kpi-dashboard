@@ -25,7 +25,15 @@ st.set_page_config(
 # Create data directory if it doesn't exist - using repository root
 # Get the directory where this script is located (repository root)
 SCRIPT_DIR = Path(__file__).parent if '__file__' in globals() else Path.cwd()
-DATA_DIR = SCRIPT_DIR / "kpi_data"
+
+# Try to use Streamlit's data directory first (persistent on Streamlit Cloud)
+import os
+if 'STREAMLIT_SHARING_MODE' in os.environ or 'STREAMLIT_RUNTIME_ENV' in os.environ:
+    # On Streamlit Cloud - use a persistent location
+    DATA_DIR = Path("/mount/src/kpi-dashboard/data/kpi_data")
+else:
+    # Local development
+    DATA_DIR = SCRIPT_DIR / "data" / "kpi_data"
 
 # Create directory if it doesn't exist
 try:
@@ -37,7 +45,7 @@ try:
 except Exception as e:
     st.error(f"Cannot create data directory: {e}")
     # Fallback to current working directory
-    DATA_DIR = Path.cwd() / "kpi_data"
+    DATA_DIR = Path.cwd() / "data" / "kpi_data"
     DATA_DIR.mkdir(exist_ok=True, parents=True)
 
 # Initialize session state
@@ -192,9 +200,14 @@ def save_kpi_data(project_name, data):
         # Save to CSV
         updated_df.to_csv(csv_path, index=False)
         
+        # Also save as JSON backup (easier to track in git)
+        json_path = csv_path.with_suffix('.json')
+        updated_df.to_json(json_path, orient='records', indent=2, date_format='iso')
+        
         # Verify the file was saved
         if csv_path.exists():
-            st.success(f"✅ File saved at: {csv_path.absolute()}")
+            st.success(f"✅ Data saved successfully!")
+            st.info(f"📂 Location: {csv_path.name}")
             return True
         else:
             st.error("❌ File was not saved properly")
@@ -600,7 +613,18 @@ def main():
     
     # Sidebar - Data Storage Info
     st.sidebar.title("💾 Data Storage")
-    st.sidebar.info(f"**Data directory:**\n`{DATA_DIR.absolute()}`")
+    
+    # Show storage location based on environment
+    if 'STREAMLIT_SHARING_MODE' in os.environ or 'STREAMLIT_RUNTIME_ENV' in os.environ:
+        st.sidebar.info("☁️ **Running on Streamlit Cloud**")
+        st.sidebar.warning("⚠️ **Important Setup Required:**\n\n"
+                          "1. Add files to GitHub\n"
+                          "2. Commit & push regularly\n"
+                          "3. Or download backups")
+    else:
+        st.sidebar.success("💻 **Running Locally**")
+    
+    st.sidebar.info(f"**Data location:**\n`{DATA_DIR.name}/`")
     
     # Check if directory exists and is writable
     if DATA_DIR.exists():
@@ -608,17 +632,73 @@ def main():
         
         # Count files but don't show names (privacy)
         csv_files = list(DATA_DIR.glob("*_KPI_data.csv"))
+        json_files = list(DATA_DIR.glob("*_KPI_data.json"))
+        
         if csv_files:
-            st.sidebar.success(f"📁 {len(csv_files)} CSV file(s) found")
+            st.sidebar.success(f"📁 {len(csv_files)} project(s) with data")
+            
+            # Backup option
+            with st.sidebar.expander("💾 Backup Options"):
+                st.write("**Download Data:**")
+                
+                if st.button("📥 Download All as ZIP", key="download_zip"):
+                    import zipfile
+                    from io import BytesIO
+                    
+                    # Create zip file in memory
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                        for csv_file in csv_files:
+                            zip_file.write(csv_file, f"csv/{csv_file.name}")
+                        for json_file in json_files:
+                            zip_file.write(json_file, f"json/{json_file.name}")
+                    
+                    zip_buffer.seek(0)
+                    st.download_button(
+                        label="💾 Download ZIP File",
+                        data=zip_buffer,
+                        file_name=f"kpi_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                        mime="application/zip",
+                        key="zip_download"
+                    )
+                
+                st.divider()
+                st.write("**Upload Backup:**")
+                uploaded_file = st.file_uploader("Restore from ZIP backup", type=['zip'], key="restore_zip")
+                
+                if uploaded_file:
+                    if st.button("🔄 Restore Data", key="restore_button"):
+                        import zipfile
+                        try:
+                            with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                                # Extract to data directory
+                                for file_info in zip_ref.filelist:
+                                    if file_info.filename.endswith('.csv'):
+                                        filename = Path(file_info.filename).name
+                                        zip_ref.extract(file_info, DATA_DIR.parent)
+                                        # Move to correct location
+                                        extracted_path = DATA_DIR.parent / file_info.filename
+                                        target_path = DATA_DIR / filename
+                                        if extracted_path.exists():
+                                            extracted_path.rename(target_path)
+                            st.success("✅ Data restored successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error restoring backup: {e}")
         else:
-            st.sidebar.warning("⚠️ No CSV files found")
+            st.sidebar.warning("⚠️ No data files found")
     else:
         st.sidebar.error("❌ Directory does not exist")
+        try:
+            DATA_DIR.mkdir(exist_ok=True, parents=True)
+            st.sidebar.success("✅ Directory created")
+        except Exception as e:
+            st.sidebar.error(f"Cannot create directory: {e}")
     
     # Show available projects count only
     available_projects = get_available_projects()
     if available_projects:
-        st.sidebar.info(f"📊 {len(available_projects)} project(s) with data")
+        st.sidebar.metric("Projects", len(available_projects))
     
     # Sidebar navigation
     st.sidebar.title("Navigation")
