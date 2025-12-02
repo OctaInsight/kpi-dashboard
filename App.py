@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Spyder Editor
-
-This is a temporary script file.
-"""
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -11,10 +6,22 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 from io import BytesIO
 import base64
-import os
-from pathlib import Path
 
+from supabase import create_client, Client
+
+# -------------------------------------------------------------
+# Supabase connection (Postgres via Supabase REST client)
+# -------------------------------------------------------------
+@st.cache_resource
+def get_supabase_client() -> Client:
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["key"]
+    return create_client(url, key)
+
+
+# -------------------------------------------------------------
 # Page configuration
+# -------------------------------------------------------------
 st.set_page_config(
     page_title="Project KPI Dashboard",
     page_icon="📊",
@@ -22,50 +29,30 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Create data directory if it doesn't exist - using repository root
-# Get the directory where this script is located (repository root)
-SCRIPT_DIR = Path(__file__).parent if '__file__' in globals() else Path.cwd()
-
-# Try to use Streamlit's data directory first (persistent on Streamlit Cloud)
-import os
-if 'STREAMLIT_SHARING_MODE' in os.environ or 'STREAMLIT_RUNTIME_ENV' in os.environ:
-    # On Streamlit Cloud - use a persistent location
-    DATA_DIR = Path("/mount/src/kpi-dashboard/data/kpi_data")
-else:
-    # Local development
-    DATA_DIR = SCRIPT_DIR / "data" / "kpi_data"
-
-# Create directory if it doesn't exist
-try:
-    DATA_DIR.mkdir(exist_ok=True, parents=True)
-    # Create a .gitkeep file to ensure the folder is tracked by git
-    gitkeep_file = DATA_DIR / ".gitkeep"
-    if not gitkeep_file.exists():
-        gitkeep_file.touch()
-except Exception as e:
-    st.error(f"Cannot create data directory: {e}")
-    # Fallback to current working directory
-    DATA_DIR = Path.cwd() / "data" / "kpi_data"
-    DATA_DIR.mkdir(exist_ok=True, parents=True)
-
-# Initialize session state
-if 'authenticated_projects' not in st.session_state:
+# -------------------------------------------------------------
+# Session state
+# -------------------------------------------------------------
+if "authenticated_projects" not in st.session_state:
     st.session_state.authenticated_projects = set()
-if 'current_page' not in st.session_state:
-    st.session_state.current_page = 'main'
-if 'selected_kpi' not in st.session_state:
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "main"
+if "selected_kpi" not in st.session_state:
     st.session_state.selected_kpi = None
-if 'selected_project' not in st.session_state:
+if "selected_project" not in st.session_state:
     st.session_state.selected_project = None
 
-# Project passwords (in production, store these securely)
-PROJECT_PASSWORDS = {
-    "Project Alpha": "alpha123",
-    "Project Beta": "beta456",
-    "Project Gamma": "gamma789"
-}
+# -------------------------------------------------------------
+# Project passwords (read from secrets)
+# -------------------------------------------------------------
+# In .streamlit/secrets.toml:
+# [project_passwords]
+# Project Alpha = "alpha123"
+# ...
+PROJECT_PASSWORDS = dict(st.secrets.get("project_passwords", {}))
 
-# Color schemes for charts - with separate background and bar colors
+# -------------------------------------------------------------
+# Color schemes for charts
+# -------------------------------------------------------------
 COLOR_SCHEMES = {
     "Blue Tones": {
         'bar_colors': ['#1f77b4', '#aec7e8', '#3498db', '#5dade2', '#85c1e9'],
@@ -141,17 +128,20 @@ COLOR_SCHEMES = {
     }
 }
 
-# Helper function to get CSV file path for a project
-def get_project_csv_path(project_name):
-    """Get the CSV file path for a specific project"""
-    # Sanitize project name for filename
-    safe_name = "".join(c for c in project_name if c.isalnum() or c in (' ', '_', '-')).strip()
-    safe_name = safe_name.replace(' ', '_')
-    return DATA_DIR / f"{safe_name}_KPI_data.csv"
-
+# -------------------------------------------------------------
 # KPI Status calculation
+# -------------------------------------------------------------
 def calculate_kpi_status(current_value, target_value, start_date, end_date):
     """Calculate if KPI is on-track, at-risk, or off-track"""
+    try:
+        current_value = float(current_value)
+        target_value = float(target_value)
+    except (TypeError, ValueError):
+        return "Not Started"
+
+    if target_value <= 0:
+        return "Not Started"
+
     if current_value >= target_value:
         return "Achieved"
     
@@ -159,11 +149,14 @@ def calculate_kpi_status(current_value, target_value, start_date, end_date):
     total_days = (end_date - start_date).days
     elapsed_days = (today - start_date).days
     
-    if elapsed_days <= 0:
+    if elapsed_days <= 0 or total_days <= 0:
         return "Not Started"
     
-    expected_progress = (elapsed_days / total_days) * target_value if total_days > 0 else 0
-    progress_ratio = current_value / expected_progress if expected_progress > 0 else 0
+    expected_progress = (elapsed_days / total_days) * target_value
+    if expected_progress <= 0:
+        return "Not Started"
+    
+    progress_ratio = current_value / expected_progress
     
     if progress_ratio >= 0.9:
         return "On Track"
@@ -172,144 +165,157 @@ def calculate_kpi_status(current_value, target_value, start_date, end_date):
     else:
         return "Delayed"
 
-# Data Management Functions
+# -------------------------------------------------------------
+# Data Management Functions (Supabase)
+# -------------------------------------------------------------
+def df_from_supabase_rows(rows):
+    """Convert Supabase rows into DataFrame with old column names."""
+    if not rows:
+        return pd.DataFrame(columns=[
+            'id',
+            'Project', 'KPI', 'Work Package', 'Target', 'Current Value',
+            'Achievement Date', 'Male Count', 'Female Count', 'Comments',
+            'Start Date', 'End Date', 'Timestamp'
+        ])
+    df = pd.DataFrame(rows)
+    # Ensure all expected columns exist
+    for col in [
+        'project', 'kpi', 'work_package', 'target', 'current_value',
+        'achievement_date', 'male_count', 'female_count', 'comments',
+        'start_date', 'end_date', 'created_at', 'id'
+    ]:
+        if col not in df.columns:
+            df[col] = None
+    df = df.rename(columns={
+        'project': 'Project',
+        'kpi': 'KPI',
+        'work_package': 'Work Package',
+        'target': 'Target',
+        'current_value': 'Current Value',
+        'achievement_date': 'Achievement Date',
+        'male_count': 'Male Count',
+        'female_count': 'Female Count',
+        'comments': 'Comments',
+        'start_date': 'Start Date',
+        'end_date': 'End Date',
+        'created_at': 'Timestamp'
+    })
+    return df
+
+
 def save_kpi_data(project_name, data):
-    """Save KPI data to project-specific CSV file"""
+    """Insert new KPI row into Supabase kpis table."""
     try:
-        csv_path = get_project_csv_path(project_name)
-        
-        # Ensure directory exists
-        csv_path.parent.mkdir(exist_ok=True, parents=True)
-        
-        # Add timestamp
-        data['Timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Convert data to DataFrame
-        new_row = pd.DataFrame([data])
-        
-        # Check if file exists
-        if csv_path.exists():
-            # Read existing data
-            existing_df = pd.read_csv(csv_path)
-            # Append new row
-            updated_df = pd.concat([existing_df, new_row], ignore_index=True)
-        else:
-            # Create new DataFrame
-            updated_df = new_row
-        
-        # Save to CSV
-        updated_df.to_csv(csv_path, index=False)
-        
-        # Also save as JSON backup (easier to track in git)
-        json_path = csv_path.with_suffix('.json')
-        updated_df.to_json(json_path, orient='records', indent=2, date_format='iso')
-        
-        # Verify the file was saved
-        if csv_path.exists():
-            st.success(f"✅ Data saved successfully!")
-            st.info(f"📂 Location: {csv_path.name}")
-            return True
-        else:
-            st.error("❌ File was not saved properly")
+        supabase = get_supabase_client()
+        payload = {
+            "project": project_name,
+            "kpi": data["KPI"],
+            "work_package": data["Work Package"],
+            "target": data["Target"],
+            "current_value": data["Current Value"],
+            "achievement_date": data["Achievement Date"],
+            "male_count": data.get("Male Count") if data.get("Male Count") != "" else None,
+            "female_count": data.get("Female Count") if data.get("Female Count") != "" else None,
+            "comments": data.get("Comments", ""),
+            "start_date": data["Start Date"],
+            "end_date": data["End Date"],
+        }
+        res = supabase.table("kpis").insert(payload).execute()
+        if res.get("error"):
+            st.error(f"Error saving data: {res['error']}")
             return False
+        return True
     except Exception as e:
         st.error(f"Error saving data: {e}")
-        import traceback
-        st.error(f"Full error: {traceback.format_exc()}")
         return False
 
+
 def load_kpi_data(project_name):
-    """Load KPI data from project-specific CSV file"""
+    """Load KPI data for a specific project from Supabase."""
     try:
-        csv_path = get_project_csv_path(project_name)
-        
-        if csv_path.exists():
-            df = pd.read_csv(csv_path)
-            st.info(f"📂 Loaded data from: {csv_path.absolute()}")
-            return df
-        else:
-            st.warning(f"⚠️ No file found at: {csv_path.absolute()}")
-            # Return empty DataFrame with correct columns
-            return pd.DataFrame(columns=[
-                'Project', 'KPI', 'Work Package', 'Target', 'Current Value',
-                'Achievement Date', 'Male Count', 'Female Count', 'Comments',
-                'Start Date', 'End Date', 'Timestamp'
-            ])
+        supabase = get_supabase_client()
+        res = (
+            supabase.table("kpis")
+            .select("*")
+            .eq("project", project_name)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        if res.get("error"):
+            st.error(f"Error loading data: {res['error']}")
+            return df_from_supabase_rows([])
+        rows = res.get("data", [])
+        return df_from_supabase_rows(rows)
     except Exception as e:
         st.error(f"Error loading data: {e}")
-        import traceback
-        st.error(f"Full error: {traceback.format_exc()}")
-        return pd.DataFrame()
+        return df_from_supabase_rows([])
+
 
 def load_all_projects_data():
-    """Load data from all project CSV files"""
-    all_data = []
-    
-    for csv_file in DATA_DIR.glob("*_KPI_data.csv"):
-        try:
-            df = pd.read_csv(csv_file)
-            all_data.append(df)
-        except Exception as e:
-            st.warning(f"Could not load {csv_file.name}: {e}")
-    
-    if all_data:
-        return pd.concat(all_data, ignore_index=True)
-    else:
-        return pd.DataFrame()
-
-def update_kpi_data(project_name, row_index, updated_data):
-    """Update existing KPI data in project-specific CSV"""
+    """Load KPI data from all projects."""
     try:
-        csv_path = get_project_csv_path(project_name)
-        
-        if not csv_path.exists():
-            st.error("Project data file not found")
+        supabase = get_supabase_client()
+        res = supabase.table("kpis").select("*").order("created_at", desc=False).execute()
+        if res.get("error"):
+            st.error(f"Error loading all data: {res['error']}")
+            return df_from_supabase_rows([])
+        rows = res.get("data", [])
+        return df_from_supabase_rows(rows)
+    except Exception as e:
+        st.error(f"Error loading all data: {e}")
+        return df_from_supabase_rows([])
+
+
+def update_kpi_data(project_name, row_id, updated_data):
+    """Update an existing KPI row in Supabase using its id."""
+    try:
+        supabase = get_supabase_client()
+        payload = {
+            "work_package": updated_data["Work Package"],
+            "target": updated_data["Target"],
+            "current_value": updated_data["Current Value"],
+            "achievement_date": updated_data["Achievement Date"],
+            "male_count": updated_data.get("Male Count"),
+            "female_count": updated_data.get("Female Count"),
+            "comments": updated_data.get("Comments", ""),
+            "start_date": updated_data["Start Date"],
+            "end_date": updated_data["End Date"],
+        }
+        res = (
+            supabase.table("kpis")
+            .update(payload)
+            .eq("id", row_id)
+            .eq("project", project_name)
+            .execute()
+        )
+        if res.get("error"):
+            st.error(f"Error updating data: {res['error']}")
             return False
-        
-        # Read existing data
-        df = pd.read_csv(csv_path)
-        
-        # Update timestamp
-        updated_data['Timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Update the specific row
-        for key, value in updated_data.items():
-            if key in df.columns:
-                df.at[row_index, key] = value
-        
-        # Save back to CSV
-        df.to_csv(csv_path, index=False)
         return True
     except Exception as e:
         st.error(f"Error updating data: {e}")
         return False
 
-def get_available_projects():
-    """Get list of projects that have CSV files"""
-    projects = []
-    
-    # Check if directory exists
-    if not DATA_DIR.exists():
-        st.warning(f"⚠️ Data directory does not exist: {DATA_DIR.absolute()}")
-        return projects
-    
-    # List all CSV files
-    csv_files = list(DATA_DIR.glob("*_KPI_data.csv"))
-    
-    if not csv_files:
-        st.info(f"📂 No CSV files found in: {DATA_DIR.absolute()}")
-    
-    for csv_file in csv_files:
-        try:
-            # Extract project name from filename
-            project_name = csv_file.stem.replace('_KPI_data', '').replace('_', ' ')
-            projects.append(project_name)
-        except Exception as e:
-            st.warning(f"Could not read project name from {csv_file.name}: {e}")
-    
-    return projects
 
+def get_available_projects():
+    """Get distinct list of project names from Supabase."""
+    try:
+        supabase = get_supabase_client()
+        # select distinct project (Supabase syntax)
+        res = supabase.table("kpis").select("project").execute()
+        if res.get("error"):
+            st.error(f"Error loading projects: {res['error']}")
+            return []
+        rows = res.get("data", [])
+        projects = sorted({row["project"] for row in rows if row.get("project")})
+        return projects
+    except Exception as e:
+        st.error(f"Error loading projects: {e}")
+        return []
+
+# -------------------------------------------------------------
 # Authentication
+# -------------------------------------------------------------
 def authenticate_project(project_name):
     """Check if user is authenticated for project"""
     return project_name in st.session_state.authenticated_projects
@@ -321,7 +327,9 @@ def login_project(project_name, password):
         return True
     return False
 
+# -------------------------------------------------------------
 # Visualization Functions
+# -------------------------------------------------------------
 def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
     """Create overview chart for all KPIs in a project"""
     project_data = df[df['Project'] == project_name].copy()
@@ -330,10 +338,14 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
         return None
     
     # Get latest entry for each KPI
+    if 'Timestamp' in project_data.columns:
+        project_data = project_data.sort_values('Timestamp')
     project_data = project_data.groupby('KPI').last().reset_index()
     
     # Calculate progress percentage
-    project_data['Progress %'] = (project_data['Current Value'] / project_data['Target'] * 100).round(2)
+    project_data['Progress %'] = (
+        project_data['Current Value'] / project_data['Target'] * 100
+    ).round(2)
     
     # Calculate status
     project_data['Status'] = project_data.apply(
@@ -345,10 +357,8 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
         ), axis=1
     )
     
-    # Get color scheme
     colors = COLOR_SCHEMES[color_scheme_name]
     
-    # Status colors (foreground)
     status_colors = {
         'Achieved': '#00CC66',
         'On Track': colors['bar_colors'][0],
@@ -358,31 +368,38 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
     }
     
     if chart_type == "Bar Chart":
-        fig = px.bar(project_data, x='KPI', y='Progress %', 
-                    color='Status',
-                    color_discrete_map=status_colors,
-                    title=f'KPI Progress Overview - {project_name}',
-                    labels={'Progress %': 'Progress (%)'},
-                    text='Progress %')
-        fig.add_hline(y=100, line_dash="dash", line_color=colors['success'], 
-                     annotation_text="Target")
+        fig = px.bar(
+            project_data, x='KPI', y='Progress %', 
+            color='Status',
+            color_discrete_map=status_colors,
+            title=f'KPI Progress Overview - {project_name}',
+            labels={'Progress %': 'Progress (%)'},
+            text='Progress %'
+        )
+        fig.add_hline(
+            y=100, line_dash="dash", line_color=colors['success'], 
+            annotation_text="Target"
+        )
         
     elif chart_type == "Histogram":
-        fig = px.histogram(project_data, x='KPI', y='Progress %',
-                          color='Status',
-                          color_discrete_map=status_colors,
-                          title=f'KPI Progress Overview - {project_name}',
-                          labels={'Progress %': 'Progress (%)'})
+        fig = px.histogram(
+            project_data, x='KPI', y='Progress %',
+            color='Status',
+            color_discrete_map=status_colors,
+            title=f'KPI Progress Overview - {project_name}',
+            labels={'Progress %': 'Progress (%)'}
+        )
         fig.add_hline(y=100, line_dash="dash", line_color=colors['success'])
         
     elif chart_type == "Scatter Plot":
-        fig = px.scatter(project_data, x='KPI', y='Progress %',
-                        size='Current Value', color='Status',
-                        color_discrete_map=status_colors,
-                        title=f'KPI Progress Overview - {project_name}')
+        fig = px.scatter(
+            project_data, x='KPI', y='Progress %',
+            size='Current Value', color='Status',
+            color_discrete_map=status_colors,
+            title=f'KPI Progress Overview - {project_name}'
+        )
         fig.add_hline(y=100, line_dash="dash", line_color=colors['success'])
     
-    # Apply background and text colors
     fig.update_layout(
         plot_bgcolor=colors['background'],
         paper_bgcolor=colors['background'],
@@ -402,6 +419,7 @@ def create_kpi_overview_chart(df, chart_type, color_scheme_name, project_name):
     
     return fig
 
+
 def create_status_pie_chart(df, project_name, color_scheme_name):
     """Create pie chart showing KPI status distribution"""
     project_data = df[df['Project'] == project_name].copy()
@@ -409,10 +427,10 @@ def create_status_pie_chart(df, project_name, color_scheme_name):
     if project_data.empty:
         return None
     
-    # Get latest entry for each KPI
+    if 'Timestamp' in project_data.columns:
+        project_data = project_data.sort_values('Timestamp')
     project_data = project_data.groupby('KPI').last().reset_index()
     
-    # Calculate status for each KPI
     project_data['Status'] = project_data.apply(
         lambda row: calculate_kpi_status(
             row['Current Value'], 
@@ -433,10 +451,12 @@ def create_status_pie_chart(df, project_name, color_scheme_name):
         'Not Started': '#CCCCCC'
     }
     
-    fig = px.pie(values=status_counts.values, names=status_counts.index,
-                title=f'KPI Status Distribution - {project_name}',
-                color=status_counts.index,
-                color_discrete_map=status_colors)
+    fig = px.pie(
+        values=status_counts.values, names=status_counts.index,
+        title=f'KPI Status Distribution - {project_name}',
+        color=status_counts.index,
+        color_discrete_map=status_colors
+    )
     
     fig.update_layout(
         paper_bgcolor=colors['background'],
@@ -446,6 +466,7 @@ def create_status_pie_chart(df, project_name, color_scheme_name):
     )
     return fig
 
+
 def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     """Create detailed charts for a specific KPI"""
     kpi_data = df[(df['Project'] == project_name) & (df['KPI'] == kpi_name)].copy()
@@ -453,11 +474,10 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     if kpi_data.empty:
         return None, None, None, None
     
-    # Sort by timestamp to show progression
-    kpi_data = kpi_data.sort_values('Timestamp')
+    if 'Timestamp' in kpi_data.columns:
+        kpi_data = kpi_data.sort_values('Timestamp')
     colors = COLOR_SCHEMES[color_scheme_name]
     
-    # Get the latest data as a dictionary for easier access
     latest_data = kpi_data.iloc[-1].to_dict()
     
     # Chart 1: Current vs Target
@@ -488,14 +508,23 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     
     # Chart 2: Progress over time
     if len(kpi_data) > 1:
-        kpi_data['Achievement Date'] = pd.to_datetime(kpi_data['Achievement Date'], errors='coerce')
+        kpi_data['Achievement Date'] = pd.to_datetime(
+            kpi_data['Achievement Date'], errors='coerce'
+        )
         
-        fig2 = px.line(kpi_data, x='Achievement Date', y='Current Value',
-                      title='Progress Over Time',
-                      markers=True)
-        fig2.update_traces(line_color=colors['bar_colors'][0], marker_color=colors['bar_colors'][1])
-        fig2.add_hline(y=latest_data['Target'], line_dash="dash", 
-                      line_color=colors['success'], annotation_text="Target")
+        fig2 = px.line(
+            kpi_data, x='Achievement Date', y='Current Value',
+            title='Progress Over Time',
+            markers=True
+        )
+        fig2.update_traces(
+            line_color=colors['bar_colors'][0],
+            marker_color=colors['bar_colors'][1]
+        )
+        fig2.add_hline(
+            y=latest_data['Target'], line_dash="dash", 
+            line_color=colors['success'], annotation_text="Target"
+        )
         fig2.update_layout(
             height=300,
             plot_bgcolor=colors['background'],
@@ -508,11 +537,10 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     else:
         fig2 = None
     
-    # Chart 3: Gender breakdown (if applicable)
+    # Chart 3: Gender breakdown
     male = latest_data.get('Male Count', 0)
     female = latest_data.get('Female Count', 0)
     
-    # Convert to numeric, handling empty strings and NaN
     try:
         male = float(male) if male != '' and pd.notna(male) else 0
         female = float(female) if female != '' and pd.notna(female) else 0
@@ -521,9 +549,11 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         female = 0
     
     if (male > 0 or female > 0):
-        fig3 = px.pie(values=[male, female], names=['Male', 'Female'],
-                     title='Gender Distribution',
-                     color_discrete_sequence=[colors['bar_colors'][0], colors['bar_colors'][2]])
+        fig3 = px.pie(
+            values=[male, female], names=['Male', 'Female'],
+            title='Gender Distribution',
+            color_discrete_sequence=[colors['bar_colors'][0], colors['bar_colors'][2]]
+        )
         fig3.update_layout(
             height=300,
             paper_bgcolor=colors['background'],
@@ -533,9 +563,8 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     else:
         fig3 = None
     
-    # Chart 4: Status indicator (Gauge)
+    # Chart 4: Status indicator
     try:
-        # Safely parse dates
         start_date_str = latest_data.get('Start Date', '')
         end_date_str = latest_data.get('End Date', '')
         
@@ -549,17 +578,15 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
         else:
             end_date = date.today()
         
-        # Calculate status
         status = calculate_kpi_status(
-            float(latest_data['Current Value']),
-            float(latest_data['Target']),
+            latest_data['Current Value'],
+            latest_data['Target'],
             start_date,
             end_date
         )
         
-        # Calculate progress percentage
-        target_val = float(latest_data['Target'])
-        current_val = float(latest_data['Current Value'])
+        target_val = float(latest_data['Target']) if latest_data['Target'] else 0
+        current_val = float(latest_data['Current Value']) if latest_data['Current Value'] else 0
         progress = (current_val / target_val * 100) if target_val > 0 else 0
         
         fig4 = go.Figure(go.Indicator(
@@ -570,12 +597,16 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
             delta={'reference': 100},
             number={'font': {'color': colors['text_color'], 'size': 30}},
             gauge={
-                'axis': {'range': [None, 100], 'tickcolor': colors['text_color'], 'tickfont': {'color': colors['text_color']}},
+                'axis': {
+                    'range': [None, 100],
+                    'tickcolor': colors['text_color'],
+                    'tickfont': {'color': colors['text_color']}
+                },
                 'bar': {'color': colors['bar_colors'][0]},
                 'steps': [
                     {'range': [0, 70], 'color': colors['grid_color']},
-                    {'range': [70, 90], 'color': colors['warning'], 'line': {'width': 0}},
-                    {'range': [90, 100], 'color': colors['success'], 'line': {'width': 0}}
+                    {'range': [70, 90], 'color': colors['warning']},
+                    {'range': [90, 100], 'color': colors['success']}
                 ],
                 'threshold': {
                     'line': {'color': colors['danger'], 'width': 4},
@@ -595,6 +626,9 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     
     return fig1, fig2, fig3, fig4
 
+# -------------------------------------------------------------
+# Export to PDF
+# -------------------------------------------------------------
 def fig_to_pdf(fig):
     """Convert plotly figure to PDF bytes"""
     img_bytes = fig.to_image(format="pdf")
@@ -607,105 +641,28 @@ def create_download_link(fig, filename):
     href = f'<a href="data:application/pdf;base64,{b64}" download="{filename}">Download PDF</a>'
     return href
 
+# -------------------------------------------------------------
 # Main App
+# -------------------------------------------------------------
 def main():
     st.title("📊 OCTA KPI Tracking System")
     
-    # Sidebar - Data Storage Info
     st.sidebar.title("💾 Data Storage")
+    st.sidebar.info("Data is stored in Supabase Postgres table: `kpis`")
     
-    # Show storage location based on environment
-    if 'STREAMLIT_SHARING_MODE' in os.environ or 'STREAMLIT_RUNTIME_ENV' in os.environ:
-        st.sidebar.info("☁️ **Running on Streamlit Cloud**")
-        st.sidebar.warning("⚠️ **Important Setup Required:**\n\n"
-                          "1. Add files to GitHub\n"
-                          "2. Commit & push regularly\n"
-                          "3. Or download backups")
-    else:
-        st.sidebar.success("💻 **Running Locally**")
-    
-    st.sidebar.info(f"**Data location:**\n`{DATA_DIR.name}/`")
-    
-    # Check if directory exists and is writable
-    if DATA_DIR.exists():
-        st.sidebar.success("✅ Directory exists")
-        
-        # Count files but don't show names (privacy)
-        csv_files = list(DATA_DIR.glob("*_KPI_data.csv"))
-        json_files = list(DATA_DIR.glob("*_KPI_data.json"))
-        
-        if csv_files:
-            st.sidebar.success(f"📁 {len(csv_files)} project(s) with data")
-            
-            # Backup option
-            with st.sidebar.expander("💾 Backup Options"):
-                st.write("**Download Data:**")
-                
-                if st.button("📥 Download All as ZIP", key="download_zip"):
-                    import zipfile
-                    from io import BytesIO
-                    
-                    # Create zip file in memory
-                    zip_buffer = BytesIO()
-                    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                        for csv_file in csv_files:
-                            zip_file.write(csv_file, f"csv/{csv_file.name}")
-                        for json_file in json_files:
-                            zip_file.write(json_file, f"json/{json_file.name}")
-                    
-                    zip_buffer.seek(0)
-                    st.download_button(
-                        label="💾 Download ZIP File",
-                        data=zip_buffer,
-                        file_name=f"kpi_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
-                        mime="application/zip",
-                        key="zip_download"
-                    )
-                
-                st.divider()
-                st.write("**Upload Backup:**")
-                uploaded_file = st.file_uploader("Restore from ZIP backup", type=['zip'], key="restore_zip")
-                
-                if uploaded_file:
-                    if st.button("🔄 Restore Data", key="restore_button"):
-                        import zipfile
-                        try:
-                            with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
-                                # Extract to data directory
-                                for file_info in zip_ref.filelist:
-                                    if file_info.filename.endswith('.csv'):
-                                        filename = Path(file_info.filename).name
-                                        zip_ref.extract(file_info, DATA_DIR.parent)
-                                        # Move to correct location
-                                        extracted_path = DATA_DIR.parent / file_info.filename
-                                        target_path = DATA_DIR / filename
-                                        if extracted_path.exists():
-                                            extracted_path.rename(target_path)
-                            st.success("✅ Data restored successfully!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error restoring backup: {e}")
-        else:
-            st.sidebar.warning("⚠️ No data files found")
-    else:
-        st.sidebar.error("❌ Directory does not exist")
-        try:
-            DATA_DIR.mkdir(exist_ok=True, parents=True)
-            st.sidebar.success("✅ Directory created")
-        except Exception as e:
-            st.sidebar.error(f"Cannot create directory: {e}")
-    
-    # Show available projects count only
     available_projects = get_available_projects()
     if available_projects:
         st.sidebar.metric("Projects", len(available_projects))
+    else:
+        st.sidebar.warning("No projects found yet.")
     
-    # Sidebar navigation
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", 
-                           ["Add New KPI Data", "Edit Existing Data", "KPI Dashboard"])
+    page = st.sidebar.radio(
+        "Go to", 
+        ["Add New KPI Data", "Edit Existing Data", "KPI Dashboard"]
+    )
     
-    # PAGE 1: Add New KPI Data
+    # -------------- PAGE 1: Add New KPI Data ------------------
     if page == "Add New KPI Data":
         st.header("➕ Add New KPI Data")
         
@@ -750,41 +707,38 @@ def main():
         if st.button("💾 Save KPI Data", type="primary"):
             if kpi and work_package:
                 data = {
-                    'Project': project,
-                    'KPI': kpi,
-                    'Work Package': work_package,
-                    'Target': target,
-                    'Current Value': current_value,
-                    'Achievement Date': achievement_date.strftime("%Y-%m-%d"),
-                    'Male Count': male_count if include_gender else '',
-                    'Female Count': female_count if include_gender else '',
-                    'Comments': comments,
-                    'Start Date': start_date.strftime("%Y-%m-%d"),
-                    'End Date': end_date.strftime("%Y-%m-%d")
+                    "Project": project,
+                    "KPI": kpi,
+                    "Work Package": work_package,
+                    "Target": target,
+                    "Current Value": current_value,
+                    "Achievement Date": achievement_date.strftime("%Y-%m-%d"),
+                    "Male Count": male_count if include_gender else "",
+                    "Female Count": female_count if include_gender else "",
+                    "Comments": comments,
+                    "Start Date": start_date.strftime("%Y-%m-%d"),
+                    "End Date": end_date.strftime("%Y-%m-%d"),
                 }
                 
                 if save_kpi_data(project, data):
-                    st.success(f"✅ KPI data saved successfully to {get_project_csv_path(project).name}")
+                    st.success("✅ KPI data saved successfully to database")
                     st.balloons()
                 else:
                     st.error("❌ Failed to save data")
             else:
                 st.warning("⚠️ Please fill in all required fields")
     
-    # PAGE 2: Edit Existing Data
+    # -------------- PAGE 2: Edit Existing Data ----------------
     elif page == "Edit Existing Data":
         st.header("✏️ Edit Existing KPI Data")
         
-        # Get projects with data
         available_projects = get_available_projects()
-        
         if not available_projects:
             st.info("No data available. Please add KPI data first.")
             return
         
         project = st.selectbox("Select Project", available_projects)
         
-        # Authentication
         if not authenticate_project(project):
             password = st.text_input("Enter Project Password", type="password", key="edit_pwd")
             if st.button("Login", key="edit_login"):
@@ -797,131 +751,147 @@ def main():
         
         st.success(f"✅ Authenticated for {project}")
         
-        # Load project data
         df = load_kpi_data(project)
-        
         if df.empty:
             st.info(f"No KPI data available for {project}")
             return
         
-        # Show summary table
         st.subheader("📋 Current KPI Data")
         st.dataframe(df, use_container_width=True)
         
-        # Select KPI to edit
-        kpi_to_edit = st.selectbox("Select KPI to Edit", df['KPI'].unique())
+        kpi_to_edit = st.selectbox("Select KPI to Edit", df["KPI"].unique())
         
-        kpi_records = df[df['KPI'] == kpi_to_edit].copy()
+        kpi_records = df[df["KPI"] == kpi_to_edit].copy()
         
         if len(kpi_records) > 0:
-            record_index = st.selectbox("Select Record", range(len(kpi_records)), 
-                                       format_func=lambda x: f"Record {x+1} - {kpi_records.iloc[x]['Timestamp']}")
+            record_index = st.selectbox(
+                "Select Record",
+                range(len(kpi_records)),
+                format_func=lambda x: f"Record {x+1} - {kpi_records.iloc[x]['Timestamp']}"
+            )
             
             selected_record = kpi_records.iloc[record_index]
-            actual_row_index = kpi_records.index[record_index]
+            row_id = int(selected_record["id"])  # use DB primary key
             
             st.subheader("✏️ Edit Record")
-            
             col1, col2 = st.columns(2)
             
             with col1:
-                new_wp = st.text_input("Work Package", value=str(selected_record['Work Package']))
-                new_target = st.number_input("Target", value=float(selected_record['Target']))
-                new_current = st.number_input("Current Value", value=float(selected_record['Current Value']))
-                new_achievement_date = st.date_input("Achievement Date", 
-                    value=pd.to_datetime(selected_record['Achievement Date']).date() if pd.notna(selected_record['Achievement Date']) else date.today())
+                new_wp = st.text_input("Work Package", value=str(selected_record["Work Package"]))
+                new_target = st.number_input(
+                    "Target", value=float(selected_record["Target"])
+                )
+                new_current = st.number_input(
+                    "Current Value", value=float(selected_record["Current Value"])
+                )
+                new_achievement_date = st.date_input(
+                    "Achievement Date",
+                    value=pd.to_datetime(selected_record["Achievement Date"]).date()
+                    if pd.notna(selected_record["Achievement Date"])
+                    else date.today(),
+                )
             
             with col2:
-                male_val = selected_record['Male Count']
-                female_val = selected_record['Female Count']
-                new_male = st.number_input("Male Count", value=int(male_val) if pd.notna(male_val) and male_val != '' else 0)
-                new_female = st.number_input("Female Count", value=int(female_val) if pd.notna(female_val) and female_val != '' else 0)
-                new_comments = st.text_area("Comments", value=str(selected_record['Comments']) if pd.notna(selected_record['Comments']) else "")
-                new_start = st.date_input("Start Date", 
-                    value=pd.to_datetime(selected_record['Start Date']).date() if pd.notna(selected_record['Start Date']) else date.today())
-                new_end = st.date_input("End Date", 
-                    value=pd.to_datetime(selected_record['End Date']).date() if pd.notna(selected_record['End Date']) else date.today())
+                male_val = selected_record["Male Count"]
+                female_val = selected_record["Female Count"]
+                new_male = st.number_input(
+                    "Male Count",
+                    value=int(male_val) if pd.notna(male_val) and male_val != "" else 0,
+                )
+                new_female = st.number_input(
+                    "Female Count",
+                    value=int(female_val)
+                    if pd.notna(female_val) and female_val != ""
+                    else 0,
+                )
+                new_comments = st.text_area(
+                    "Comments",
+                    value=str(selected_record["Comments"])
+                    if pd.notna(selected_record["Comments"])
+                    else "",
+                )
+                new_start = st.date_input(
+                    "Start Date",
+                    value=pd.to_datetime(selected_record["Start Date"]).date()
+                    if pd.notna(selected_record["Start Date"])
+                    else date.today(),
+                )
+                new_end = st.date_input(
+                    "End Date",
+                    value=pd.to_datetime(selected_record["End Date"]).date()
+                    if pd.notna(selected_record["End Date"])
+                    else date.today(),
+                )
             
             if st.button("💾 Update KPI Data", type="primary"):
                 updated_data = {
-                    'Project': project,
-                    'KPI': kpi_to_edit,
-                    'Work Package': new_wp,
-                    'Target': new_target,
-                    'Current Value': new_current,
-                    'Achievement Date': new_achievement_date.strftime("%Y-%m-%d"),
-                    'Male Count': new_male,
-                    'Female Count': new_female,
-                    'Comments': new_comments,
-                    'Start Date': new_start.strftime("%Y-%m-%d"),
-                    'End Date': new_end.strftime("%Y-%m-%d")
+                    "Project": project,
+                    "KPI": kpi_to_edit,
+                    "Work Package": new_wp,
+                    "Target": new_target,
+                    "Current Value": new_current,
+                    "Achievement Date": new_achievement_date.strftime("%Y-%m-%d"),
+                    "Male Count": new_male,
+                    "Female Count": new_female,
+                    "Comments": new_comments,
+                    "Start Date": new_start.strftime("%Y-%m-%d"),
+                    "End Date": new_end.strftime("%Y-%m-%d"),
                 }
                 
-                if update_kpi_data(project, actual_row_index, updated_data):
+                if update_kpi_data(project, row_id, updated_data):
                     st.success("✅ KPI data updated successfully!")
                     st.rerun()
                 else:
                     st.error("❌ Failed to update data")
     
-    # PAGE 3: KPI Dashboard
+    # -------------- PAGE 3: KPI Dashboard ---------------------
     elif page == "KPI Dashboard":
         st.header("📈 KPI Dashboard")
         
-        # Get projects with data
         available_projects = get_available_projects()
-        
         if not available_projects:
             st.info("No data available. Please add KPI data first.")
             return
         
-        # Project selection
         project = st.selectbox("Select Project for Dashboard", available_projects)
         
-        # Load project data
         df = load_kpi_data(project)
-        
         if df.empty:
             st.info(f"No data available for {project}")
             return
         
-        # Check if we're viewing a specific KPI detail
-        if st.session_state.current_page == 'kpi_detail' and st.session_state.selected_kpi:
-            # KPI Detail View
+        if st.session_state.current_page == "kpi_detail" and st.session_state.selected_kpi:
             st.subheader(f"📊 Detailed View: {st.session_state.selected_kpi}")
             
             if st.button("⬅️ Back to Overview"):
-                st.session_state.current_page = 'main'
+                st.session_state.current_page = "main"
                 st.session_state.selected_kpi = None
                 st.rerun()
             
-            # Color scheme selection
             col1, col2 = st.columns([3, 1])
             with col2:
-                color_scheme = st.selectbox("Color Scheme", 
+                color_scheme = st.selectbox(
+                    "Color Scheme",
                     list(COLOR_SCHEMES.keys()),
-                    key="detail_color")
+                    key="detail_color"
+                )
             
-            # Create detailed charts
             fig1, fig2, fig3, fig4 = create_detailed_kpi_charts(
                 df, project, st.session_state.selected_kpi, color_scheme
             )
             
-            # Display charts
             col1, col2 = st.columns(2)
-            
             with col1:
                 if fig1:
                     st.plotly_chart(fig1, use_container_width=True)
                 if fig2:
                     st.plotly_chart(fig2, use_container_width=True)
-            
             with col2:
                 if fig4:
                     st.plotly_chart(fig4, use_container_width=True)
                 if fig3:
                     st.plotly_chart(fig3, use_container_width=True)
             
-            # Download buttons
             st.subheader("📥 Download Charts")
             download_cols = st.columns(4)
             
@@ -929,103 +899,110 @@ def main():
                 with download_cols[0]:
                     if st.button("Download Chart 1"):
                         pdf_bytes = fig_to_pdf(fig1)
-                        st.download_button("📄 Download PDF", pdf_bytes, 
-                                         f"{st.session_state.selected_kpi}_chart1.pdf",
-                                         mime="application/pdf")
+                        st.download_button(
+                            "📄 Download PDF",
+                            pdf_bytes,
+                            f"{st.session_state.selected_kpi}_chart1.pdf",
+                            mime="application/pdf",
+                        )
             
             if fig2:
                 with download_cols[1]:
                     if st.button("Download Chart 2"):
                         pdf_bytes = fig_to_pdf(fig2)
-                        st.download_button("📄 Download PDF", pdf_bytes,
-                                         f"{st.session_state.selected_kpi}_chart2.pdf",
-                                         mime="application/pdf")
+                        st.download_button(
+                            "📄 Download PDF",
+                            pdf_bytes,
+                            f"{st.session_state.selected_kpi}_chart2.pdf",
+                            mime="application/pdf",
+                        )
             
-            # Show KPI details table
             st.subheader("📋 KPI Details")
-            kpi_detail_data = df[df['KPI'] == st.session_state.selected_kpi]
+            kpi_detail_data = df[df["KPI"] == st.session_state.selected_kpi]
             st.dataframe(kpi_detail_data, use_container_width=True)
-            
+        
         else:
-            # Overview Dashboard
-            st.session_state.current_page = 'main'
+            st.session_state.current_page = "main"
             
-            # Chart customization options
             col1, col2, col3 = st.columns(3)
-            
             with col1:
-                chart_type = st.selectbox("Chart Type", 
-                    ["Bar Chart", "Histogram", "Scatter Plot"])
-            
+                chart_type = st.selectbox(
+                    "Chart Type",
+                    ["Bar Chart", "Histogram", "Scatter Plot"]
+                )
             with col2:
-                color_scheme = st.selectbox("Color Scheme", 
-                    list(COLOR_SCHEMES.keys()))
+                color_scheme = st.selectbox(
+                    "Color Scheme",
+                    list(COLOR_SCHEMES.keys())
+                )
             
-            # Main overview chart
             overview_fig = create_kpi_overview_chart(df, chart_type, color_scheme, project)
-            
             if overview_fig:
                 st.plotly_chart(overview_fig, use_container_width=True)
                 
-                # Download button for overview
                 if st.button("📥 Download Overview Chart as PDF"):
                     pdf_bytes = fig_to_pdf(overview_fig)
-                    st.download_button("📄 Download PDF", pdf_bytes,
-                                     f"{project}_overview.pdf",
-                                     mime="application/pdf")
+                    st.download_button(
+                        "📄 Download PDF",
+                        pdf_bytes,
+                        f"{project}_overview.pdf",
+                        mime="application/pdf",
+                    )
             
-            # Status distribution pie chart
             col1, col2 = st.columns(2)
-            
             with col1:
                 status_fig = create_status_pie_chart(df, project, color_scheme)
                 if status_fig:
                     st.plotly_chart(status_fig, use_container_width=True)
-            
             with col2:
-                # KPI Summary Table
                 st.subheader("📊 KPI Summary")
-                
-                # Get latest entry for each KPI
-                summary_data = df.groupby('KPI').last().reset_index()
-                summary_data['Progress %'] = (summary_data['Current Value'] / summary_data['Target'] * 100).round(2)
-                summary = summary_data[['KPI', 'Target', 'Current Value', 'Progress %']]
-                
+                if 'Timestamp' in df.columns:
+                    df_sorted = df.sort_values('Timestamp')
+                else:
+                    df_sorted = df.copy()
+                summary_data = df_sorted.groupby("KPI").last().reset_index()
+                summary_data["Progress %"] = (
+                    summary_data["Current Value"] / summary_data["Target"] * 100
+                ).round(2)
+                summary = summary_data[["KPI", "Target", "Current Value", "Progress %"]]
                 st.dataframe(summary, use_container_width=True)
             
-            # Clickable KPI cards
             st.subheader("🎯 Click on a KPI for Detailed View")
-            
-            project_kpis = df['KPI'].unique()
-            
+            project_kpis = df["KPI"].unique()
             cols = st.columns(min(3, len(project_kpis)))
             
-            for idx, kpi in enumerate(project_kpis):
+            for idx, kpi_name in enumerate(project_kpis):
                 with cols[idx % 3]:
-                    kpi_data = df[df['KPI'] == kpi].iloc[-1]
-                    progress = (kpi_data['Current Value'] / kpi_data['Target'] * 100)
-                    
-                    status = calculate_kpi_status(
-                        kpi_data['Current Value'],
-                        kpi_data['Target'],
-                        pd.to_datetime(kpi_data['Start Date']).date(),
-                        pd.to_datetime(kpi_data['End Date']).date()
+                    kpi_data = df[df["KPI"] == kpi_name].iloc[-1]
+                    progress = (
+                        kpi_data["Current Value"] / kpi_data["Target"] * 100
+                        if kpi_data["Target"]
+                        else 0
                     )
-                    
+                    status = calculate_kpi_status(
+                        kpi_data["Current Value"],
+                        kpi_data["Target"],
+                        pd.to_datetime(kpi_data["Start Date"]).date(),
+                        pd.to_datetime(kpi_data["End Date"]).date(),
+                    )
                     status_color = {
-                        'Achieved': '🟢',
-                        'On Track': '🔵',
-                        'At Risk': '🟡',
-                        'Delayed': '🔴',
-                        'Not Started': '⚪'
-                    }.get(status, '⚪')
+                        "Achieved": "🟢",
+                        "On Track": "🔵",
+                        "At Risk": "🟡",
+                        "Delayed": "🔴",
+                        "Not Started": "⚪",
+                    }.get(status, "⚪")
                     
-                    if st.button(f"{status_color} {kpi}\n{progress:.1f}% Complete", 
-                               key=f"kpi_{idx}", use_container_width=True):
-                        st.session_state.current_page = 'kpi_detail'
-                        st.session_state.selected_kpi = kpi
+                    if st.button(
+                        f"{status_color} {kpi_name}\n{progress:.1f}% Complete",
+                        key=f"kpi_{idx}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.current_page = "kpi_detail"
+                        st.session_state.selected_kpi = kpi_name
                         st.session_state.selected_project = project
                         st.rerun()
+
 
 if __name__ == "__main__":
     main()
