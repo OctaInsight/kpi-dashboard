@@ -7,16 +7,53 @@ from datetime import datetime, date
 from io import BytesIO
 import base64
 
-from supabase import create_client, Client
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    st.error("⚠️ Supabase library not installed. Run: pip install supabase")
 
 # -------------------------------------------------------------
 # Supabase connection (Postgres via Supabase REST client)
 # -------------------------------------------------------------
 @st.cache_resource
 def get_supabase_client() -> Client:
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["key"]
-    return create_client(url, key)
+    """Initialize Supabase client with error handling"""
+    try:
+        # Check if secrets are configured
+        if "supabase" not in st.secrets:
+            st.error("❌ Supabase credentials not found in secrets.toml")
+            st.info("""
+            Please add the following to .streamlit/secrets.toml:
+            
+            [supabase]
+            url = "your-project-url"
+            key = "your-anon-key"
+            """)
+            st.stop()
+        
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["key"]
+        
+        if not url or not key:
+            st.error("❌ Supabase URL or Key is empty")
+            st.stop()
+        
+        client = create_client(url, key)
+        
+        # Test connection
+        try:
+            client.table("kpis").select("id", count="exact").limit(1).execute()
+        except Exception as e:
+            st.error(f"❌ Failed to connect to Supabase: {str(e)}")
+            st.info("Please check your Supabase credentials and ensure the 'kpis' table exists.")
+            st.stop()
+        
+        return client
+    except Exception as e:
+        st.error(f"❌ Error initializing Supabase: {str(e)}")
+        st.stop()
 
 
 # -------------------------------------------------------------
@@ -44,11 +81,14 @@ if "selected_project" not in st.session_state:
 # -------------------------------------------------------------
 # Project passwords (read from secrets)
 # -------------------------------------------------------------
-# In .streamlit/secrets.toml:
-# [project_passwords]
-# Project Alpha = "alpha123"
-# ...
-PROJECT_PASSWORDS = dict(st.secrets.get("project_passwords", {}))
+try:
+    PROJECT_PASSWORDS = dict(st.secrets.get("project_passwords", {}))
+    if not PROJECT_PASSWORDS:
+        st.warning("⚠️ No project passwords configured in secrets.toml")
+        PROJECT_PASSWORDS = {"Demo Project": "demo123"}  # Fallback for testing
+except Exception as e:
+    st.error(f"Error loading project passwords: {e}")
+    PROJECT_PASSWORDS = {"Demo Project": "demo123"}
 
 # -------------------------------------------------------------
 # Color schemes for charts
@@ -211,19 +251,16 @@ def save_kpi_data(project_name, data):
             "project": project_name,
             "kpi": data["KPI"],
             "work_package": data["Work Package"],
-            "target": data["Target"],
-            "current_value": data["Current Value"],
+            "target": float(data["Target"]),
+            "current_value": float(data["Current Value"]),
             "achievement_date": data["Achievement Date"],
-            "male_count": data.get("Male Count") if data.get("Male Count") != "" else None,
-            "female_count": data.get("Female Count") if data.get("Female Count") != "" else None,
+            "male_count": int(data.get("Male Count")) if data.get("Male Count") not in ["", None] else None,
+            "female_count": int(data.get("Female Count")) if data.get("Female Count") not in ["", None] else None,
             "comments": data.get("Comments", ""),
             "start_date": data["Start Date"],
             "end_date": data["End Date"],
         }
         res = supabase.table("kpis").insert(payload).execute()
-        if res.get("error"):
-            st.error(f"Error saving data: {res['error']}")
-            return False
         return True
     except Exception as e:
         st.error(f"Error saving data: {e}")
@@ -241,10 +278,7 @@ def load_kpi_data(project_name):
             .order("created_at", desc=False)
             .execute()
         )
-        if res.get("error"):
-            st.error(f"Error loading data: {res['error']}")
-            return df_from_supabase_rows([])
-        rows = res.get("data", [])
+        rows = res.data if hasattr(res, 'data') else []
         return df_from_supabase_rows(rows)
     except Exception as e:
         st.error(f"Error loading data: {e}")
@@ -256,10 +290,7 @@ def load_all_projects_data():
     try:
         supabase = get_supabase_client()
         res = supabase.table("kpis").select("*").order("created_at", desc=False).execute()
-        if res.get("error"):
-            st.error(f"Error loading all data: {res['error']}")
-            return df_from_supabase_rows([])
-        rows = res.get("data", [])
+        rows = res.data if hasattr(res, 'data') else []
         return df_from_supabase_rows(rows)
     except Exception as e:
         st.error(f"Error loading all data: {e}")
@@ -272,11 +303,11 @@ def update_kpi_data(project_name, row_id, updated_data):
         supabase = get_supabase_client()
         payload = {
             "work_package": updated_data["Work Package"],
-            "target": updated_data["Target"],
-            "current_value": updated_data["Current Value"],
+            "target": float(updated_data["Target"]),
+            "current_value": float(updated_data["Current Value"]),
             "achievement_date": updated_data["Achievement Date"],
-            "male_count": updated_data.get("Male Count"),
-            "female_count": updated_data.get("Female Count"),
+            "male_count": int(updated_data.get("Male Count")) if updated_data.get("Male Count") not in ["", None] else None,
+            "female_count": int(updated_data.get("Female Count")) if updated_data.get("Female Count") not in ["", None] else None,
             "comments": updated_data.get("Comments", ""),
             "start_date": updated_data["Start Date"],
             "end_date": updated_data["End Date"],
@@ -288,9 +319,6 @@ def update_kpi_data(project_name, row_id, updated_data):
             .eq("project", project_name)
             .execute()
         )
-        if res.get("error"):
-            st.error(f"Error updating data: {res['error']}")
-            return False
         return True
     except Exception as e:
         st.error(f"Error updating data: {e}")
@@ -301,12 +329,8 @@ def get_available_projects():
     """Get distinct list of project names from Supabase."""
     try:
         supabase = get_supabase_client()
-        # select distinct project (Supabase syntax)
         res = supabase.table("kpis").select("project").execute()
-        if res.get("error"):
-            st.error(f"Error loading projects: {res['error']}")
-            return []
-        rows = res.get("data", [])
+        rows = res.data if hasattr(res, 'data') else []
         projects = sorted({row["project"] for row in rows if row.get("project")})
         return projects
     except Exception as e:
@@ -542,8 +566,8 @@ def create_detailed_kpi_charts(df, project_name, kpi_name, color_scheme_name):
     female = latest_data.get('Female Count', 0)
     
     try:
-        male = float(male) if male != '' and pd.notna(male) else 0
-        female = float(female) if female != '' and pd.notna(female) else 0
+        male = float(male) if male not in ['', None] and pd.notna(male) else 0
+        female = float(female) if female not in ['', None] and pd.notna(female) else 0
     except (ValueError, TypeError):
         male = 0
         female = 0
@@ -645,10 +669,22 @@ def create_download_link(fig, filename):
 # Main App
 # -------------------------------------------------------------
 def main():
+    # Check if Supabase is available
+    if not SUPABASE_AVAILABLE:
+        st.stop()
+    
     st.title("📊 OCTA KPI Tracking System")
     
     st.sidebar.title("💾 Data Storage")
     st.sidebar.info("Data is stored in Supabase Postgres table: `kpis`")
+    
+    # Show connection status
+    try:
+        get_supabase_client()
+        st.sidebar.success("✅ Connected to Supabase")
+    except:
+        st.sidebar.error("❌ Not connected to Supabase")
+        st.stop()
     
     available_projects = get_available_projects()
     if available_projects:
@@ -720,11 +756,12 @@ def main():
                     "End Date": end_date.strftime("%Y-%m-%d"),
                 }
                 
-                if save_kpi_data(project, data):
-                    st.success("✅ KPI data saved successfully to database")
-                    st.balloons()
-                else:
-                    st.error("❌ Failed to save data")
+                with st.spinner("Saving data..."):
+                    if save_kpi_data(project, data):
+                        st.success("✅ KPI data saved successfully to database")
+                        st.balloons()
+                    else:
+                        st.error("❌ Failed to save data")
             else:
                 st.warning("⚠️ Please fill in all required fields")
     
@@ -838,11 +875,12 @@ def main():
                     "End Date": new_end.strftime("%Y-%m-%d"),
                 }
                 
-                if update_kpi_data(project, row_id, updated_data):
-                    st.success("✅ KPI data updated successfully!")
-                    st.rerun()
-                else:
-                    st.error("❌ Failed to update data")
+                with st.spinner("Updating data..."):
+                    if update_kpi_data(project, row_id, updated_data):
+                        st.success("✅ KPI data updated successfully!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to update data")
     
     # -------------- PAGE 3: KPI Dashboard ---------------------
     elif page == "KPI Dashboard":
